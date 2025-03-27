@@ -9,9 +9,16 @@ func main() {
 	// Create a new ServeMux
 	mux := http.NewServeMux()
 
-	// Create a file server handler for the current directory
+	// Add health check endpoint
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Create a file server handler for the current directory under /app path
 	fileServer := http.FileServer(http.Dir("."))
-	mux.Handle("/", fileServer)
+	mux.Handle("/app/", http.StripPrefix("/app/", fileServer))
 
 	// Create the server with the mux as handler
 	server := &http.Server{
