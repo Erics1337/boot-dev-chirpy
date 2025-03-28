@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -17,8 +18,31 @@ type validateChirpRequest struct {
 }
 
 type validateChirpResponse struct {
-	Valid bool   `json:"valid,omitempty"`
-	Error string `json:"error,omitempty"`
+	CleanedBody string `json:"cleaned_body,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+var profaneWords = []string{
+	"kerfuffle",
+	"sharbert",
+	"fornax",
+}
+
+func cleanChirp(body string) string {
+	words := strings.Fields(body)
+	for i, word := range words {
+		wordOnly := strings.TrimFunc(word, func(r rune) bool {
+			return !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'))
+		})
+
+		for _, profane := range profaneWords {
+			if strings.ToLower(wordOnly) == strings.ToLower(profane) && wordOnly == word {
+				words[i] = "****"
+				break
+			}
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
@@ -77,13 +101,17 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clean the chirp
+	cleaned := cleanChirp(req.Body)
+	log.Printf("DEBUG: Cleaned chirp: %s", cleaned)
+
 	// Set content type header
 	w.Header().Set("Content-Type", "application/json")
 
 	// Return success response
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(validateChirpResponse{
-		Valid: true,
+		CleanedBody: cleaned,
 	})
 }
 
