@@ -8,11 +8,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	// "sort" // Removed unused import
 	"strings"
 	"sync/atomic"
-	"time" // Need this for formatting timestamps in response
+	"time"
 
-	database "github.com/erics1337/boot-dev-chirpy/internal/database"
+	"github.com/erics1337/boot-dev-chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -29,7 +31,6 @@ type createChirpRequest struct {
 	UserID string `json:"user_id"`
 }
 
-// Updated response to include all fields
 type createChirpResponse struct {
 	ID        string `json:"id"`
 	CreatedAt string `json:"created_at"`
@@ -124,9 +125,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	// Persist the chirp to the database
 	chirp, err := cfg.DB.CreateChirp(context.Background(), params)
 	if err != nil {
-		// Log the actual error for debugging
 		log.Printf("Error creating chirp: %v", err)
-		// Provide a generic error to the client
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Could not create chirp"})
 		return
@@ -135,8 +134,8 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	// Prepare the response using the data returned from the database
 	resp := createChirpResponse{
 		ID:        chirp.ID.String(),
-		CreatedAt: chirp.CreatedAt.Format(time.RFC3339), // Use standard format
-		UpdatedAt: chirp.UpdatedAt.Format(time.RFC3339), // Use standard format
+		CreatedAt: chirp.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: chirp.UpdatedAt.Format(time.RFC3339),
 		Body:      chirp.Body,
 		UserID:    chirp.UserID.String(),
 	}
@@ -147,6 +146,43 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	// Return 201 Created status
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	// Validate request method
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	// Fetch chirps from the database
+	dbChirps, err := cfg.DB.GetChirps(context.Background())
+	if err != nil {
+		log.Printf("Error getting chirps: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Could not retrieve chirps"})
+		return
+	}
+
+	// Transform database chirps into response chirps
+	respChirps := make([]createChirpResponse, 0, len(dbChirps))
+	for _, dbChirp := range dbChirps {
+		respChirps = append(respChirps, createChirpResponse{
+			ID:        dbChirp.ID.String(),
+			CreatedAt: dbChirp.CreatedAt.Format(time.RFC3339),
+			UpdatedAt: dbChirp.UpdatedAt.Format(time.RFC3339),
+			Body:      dbChirp.Body,
+			UserID:    dbChirp.UserID.String(),
+		})
+	}
+
+	// Set content type header
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return 200 OK status
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(respChirps)
 }
 
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -193,8 +229,8 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	// Prepare the response
 	resp := createUserResponse{
 		ID:        user.ID.String(),
-		CreatedAt: user.CreatedAt.Format(time.RFC3339), // Use standard format
-		UpdatedAt: user.UpdatedAt.Format(time.RFC3339), // Use standard format
+		CreatedAt: user.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: user.UpdatedAt.Format(time.RFC3339),
 		Email:     user.Email,
 	}
 
@@ -256,7 +292,17 @@ func main() {
 	mux.HandleFunc("/admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("/admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("/api/users", apiCfg.handlerCreateUser)
-	mux.HandleFunc("/api/chirps", apiCfg.handlerCreateChirp)
+	// Register both POST and GET handlers for /api/chirps
+	mux.HandleFunc("/api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			apiCfg.handlerCreateChirp(w, r)
+		case http.MethodGet:
+			apiCfg.handlerGetChirps(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
 
 	// Create the server with the mux as handler
 	server := &http.Server{
