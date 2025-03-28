@@ -3,22 +3,31 @@ package main
 import (
 	"log"
 	"net/http"
+	"sync/atomic"
 )
 
+type apiConfig struct {
+	fileserverHits atomic.Int32
+}
+
 func main() {
+	// Create a new apiConfig
+	apiCfg := &apiConfig{}
+
 	// Create a new ServeMux
 	mux := http.NewServeMux()
 
 	// Add health check endpoint
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
+	mux.HandleFunc("/healthz", handlerReadiness)
 
-	// Create a file server handler for the current directory under /app path
+	// Create a file server handler with metrics middleware
 	fileServer := http.FileServer(http.Dir("."))
-	mux.Handle("/app/", http.StripPrefix("/app/", fileServer))
+	wrappedHandler := apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", fileServer))
+	mux.Handle("/app/", wrappedHandler)
+
+	// Add metrics and reset endpoints
+	mux.HandleFunc("/metrics", apiCfg.handlerMetrics)
+	mux.HandleFunc("/reset", apiCfg.handlerReset)
 
 	// Create the server with the mux as handler
 	server := &http.Server{

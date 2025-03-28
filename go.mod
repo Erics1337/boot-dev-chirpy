@@ -1,3 +1,3 @@
 module github.com/ericswanson/boot-dev-chirpy
 
-go 1.23.4
+go 1.22
