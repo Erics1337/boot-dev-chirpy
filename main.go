@@ -18,16 +18,16 @@ func main() {
 	mux := http.NewServeMux()
 
 	// Add health check endpoint
-	
+
 	// Create a file server handler with metrics middleware
 	fileServer := http.FileServer(http.Dir("."))
 	wrappedHandler := apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", fileServer))
 	mux.Handle("/app/", wrappedHandler)
-	
+
 	// Add endpoints
 	mux.HandleFunc("/api/healthz", handlerReadiness)
-	mux.HandleFunc("/api/metrics", apiCfg.handlerMetrics)
-	mux.HandleFunc("/api/reset", apiCfg.handlerReset)
+	mux.HandleFunc("/admin/metrics", apiCfg.handlerMetrics)
+	mux.HandleFunc("/admin/reset", apiCfg.handlerReset)
 
 	// Create the server with the mux as handler
 	server := &http.Server{
