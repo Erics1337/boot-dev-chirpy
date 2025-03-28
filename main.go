@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
@@ -18,6 +19,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	DB             *database.Queries
+	Platform       string
 }
 
 type validateChirpRequest struct {
@@ -27,6 +29,17 @@ type validateChirpRequest struct {
 type validateChirpResponse struct {
 	CleanedBody string `json:"cleaned_body,omitempty"`
 	Error       string `json:"error,omitempty"`
+}
+
+type createUserRequest struct {
+	Email string `json:"email"`
+}
+
+type createUserResponse struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Email     string `json:"email"`
 }
 
 var profaneWords = []string{
@@ -50,6 +63,63 @@ func cleanChirp(body string) string {
 		}
 	}
 	return strings.Join(words, " ")
+}
+
+func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+	// Validate request method
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Method not allowed",
+		})
+		return
+	}
+
+	// Read the request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Error reading request body",
+		})
+		return
+	}
+
+	// Parse the request body
+	var req createUserRequest
+	err = json.Unmarshal(body, &req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Invalid JSON body",
+		})
+		return
+	}
+
+	// Create the user
+	user, err := cfg.DB.CreateUser(context.Background(), req.Email)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Error creating user",
+		})
+		return
+	}
+
+	// Prepare the response
+	resp := createUserResponse{
+		ID:        user.ID.String(),
+		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: user.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		Email:     user.Email,
+	}
+
+	// Set content type header
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return created status
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +205,12 @@ func main() {
 		log.Fatal("DB_URL environment variable is not set")
 	}
 
+	// Get platform
+	platform := os.Getenv("PLATFORM")
+	if platform == "" {
+		platform = "dev" // Default to dev if not set
+	}
+
 	// Connect to the database
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -147,7 +223,8 @@ func main() {
 
 	// Create a new apiConfig
 	apiCfg := &apiConfig{
-		DB: dbQueries,
+		DB:       dbQueries,
+		Platform: platform,
 	}
 
 	// Create a new ServeMux
@@ -165,6 +242,7 @@ func main() {
 	mux.HandleFunc("/admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("/admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("/api/validate_chirp", handlerValidateChirp)
+	mux.HandleFunc("/api/users", apiCfg.handlerCreateUser)
 
 	// Create the server with the mux as handler
 	server := &http.Server{
