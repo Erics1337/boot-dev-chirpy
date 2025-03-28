@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -45,5 +46,63 @@ func TestMakeAndValidateJWT(t *testing.T) {
 	} else {
 		// Check if the error indicates expiration (optional, depends on jwt library specifics)
 		// fmt.Printf("Expired token validation error: %v\n", err) // Uncomment for debugging
+	}
+}
+
+func TestGetBearerToken(t *testing.T) {
+	tests := []struct {
+		name        string
+		header      http.Header
+		expected    string
+		expectedErr error
+	}{
+		{
+			name:        "Valid Bearer Token",
+			header:      http.Header{"Authorization": {"Bearer mytoken123"}},
+			expected:    "mytoken123",
+			expectedErr: nil,
+		},
+		{
+			name:        "Valid Bearer Token Lowercase",
+			header:      http.Header{"Authorization": {"bearer mytoken456"}},
+			expected:    "mytoken456",
+			expectedErr: nil,
+		},
+		{
+			name:        "No Authorization Header",
+			header:      http.Header{},
+			expected:    "",
+			expectedErr: ErrNoAuthHeaderIncluded,
+		},
+		{
+			name:        "Malformed - Missing Bearer",
+			header:      http.Header{"Authorization": {"mytoken789"}},
+			expected:    "",
+			expectedErr: ErrMalformedAuthHeader,
+		},
+		{
+			name:        "Malformed - Wrong Scheme",
+			header:      http.Header{"Authorization": {"Basic mytokenabc"}},
+			expected:    "",
+			expectedErr: ErrMalformedAuthHeader,
+		},
+		{
+			name:        "Malformed - Too Many Parts",
+			header:      http.Header{"Authorization": {"Bearer mytoken extra"}},
+			expected:    "",
+			expectedErr: ErrMalformedAuthHeader,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token, err := GetBearerToken(tt.header)
+			if token != tt.expected {
+				t.Errorf("Expected token '%s', got '%s'", tt.expected, token)
+			}
+			if err != tt.expectedErr {
+				t.Errorf("Expected error '%v', got '%v'", tt.expectedErr, err)
+			}
+		})
 	}
 }

@@ -3,12 +3,17 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
+
+var ErrNoAuthHeaderIncluded = errors.New("no authorization header included")
+var ErrMalformedAuthHeader = errors.New("malformed authorization header")
 
 // HashPassword hashes a password using bcrypt
 func HashPassword(password string) (string, error) {
@@ -50,6 +55,7 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	})
 
 	if err != nil {
+		// Consider checking for specific errors like jwt.ErrTokenExpired
 		return uuid.Nil, fmt.Errorf("failed to parse token: %w", err)
 	}
 
@@ -64,4 +70,19 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	}
 
 	return userID, nil
+}
+
+// GetBearerToken extracts the token from the Authorization header
+func GetBearerToken(headers http.Header) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", ErrNoAuthHeaderIncluded
+	}
+
+	splitHeader := strings.Split(authHeader, " ")
+	if len(splitHeader) != 2 || strings.ToLower(splitHeader[0]) != "bearer" {
+		return "", ErrMalformedAuthHeader
+	}
+
+	return splitHeader[1], nil
 }

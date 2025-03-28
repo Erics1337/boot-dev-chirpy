@@ -24,11 +24,12 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	DB             *database.Queries
 	Platform       string
+	jwtSecret      string // Add JWT secret field
 }
 
+// Remove UserID, it will come from JWT
 type createChirpRequest struct {
-	Body   string `json:"body"`
-	UserID string `json:"user_id"`
+	Body string `json:"body"`
 }
 
 type createChirpResponse struct {
@@ -53,16 +54,18 @@ type createUserResponse struct {
 
 // Add login request struct
 type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email            string `json:"email"`
+	Password         string `json:"password"`
+	ExpiresInSeconds *int   `json:"expires_in_seconds"` // Optional expiration
 }
 
-// Add login response struct (same as createUserResponse for now)
+// Add login response struct
 type loginResponse struct {
 	ID        string `json:"id"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 	Email     string `json:"email"`
+	Token     string `json:"token"` // Add token field
 }
 
 var profaneWords = []string{
@@ -96,6 +99,24 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// --- Authentication ---
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting bearer token: %v", err)
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
+	if err != nil {
+		log.Printf("Error validating JWT: %v", err)
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+	// --- End Authentication ---
+
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -113,14 +134,6 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Parse UserID string into uuid.UUID
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid user_id format"})
-		return
-	}
-
 	// Validate chirp length
 	if len(req.Body) > 140 {
 		w.WriteHeader(http.StatusBadRequest)
@@ -131,7 +144,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	// Clean the chirp
 	cleanedBody := cleanChirp(req.Body)
 
-	// Prepare parameters for database query
+	// Prepare parameters for database query (using userID from token)
 	params := database.CreateChirpParams{
 		Body:   cleanedBody,
 		UserID: userID,
@@ -152,7 +165,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		CreatedAt: chirp.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: chirp.UpdatedAt.Format(time.RFC3339),
 		Body:      chirp.Body,
-		UserID:    chirp.UserID.String(),
+		UserID:    chirp.UserID.String(), // UserID from the created record
 	}
 
 	// Set content type header
@@ -373,12 +386,34 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prepare the response (without password/hash)
+	// Determine expiration duration
+	expiresIn := time.Hour // Default: 1 hour
+	if req.ExpiresInSeconds != nil {
+		requestedSeconds := *req.ExpiresInSeconds
+		if requestedSeconds > 0 && requestedSeconds <= 3600 { // Cap at 1 hour (3600 seconds)
+			expiresIn = time.Duration(requestedSeconds) * time.Second
+		} else if requestedSeconds > 3600 {
+			expiresIn = time.Hour // Cap at 1 hour if requested > 1 hour
+		}
+		// If requestedSeconds <= 0, the default of 1 hour is used
+	}
+
+	// Generate JWT
+	tokenString, err := auth.MakeJWT(user.ID, cfg.jwtSecret, expiresIn)
+	if err != nil {
+		log.Printf("Error generating JWT: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Error generating access token"})
+		return
+	}
+
+	// Prepare the response
 	resp := loginResponse{
 		ID:        user.ID.String(),
 		CreatedAt: user.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: user.UpdatedAt.Format(time.RFC3339),
 		Email:     user.Email,
+		Token:     tokenString, // Include the token
 	}
 
 	// Set content type header
@@ -408,6 +443,12 @@ func main() {
 		platform = "dev" // Default to dev if not set
 	}
 
+	// Get JWT secret
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET environment variable is not set")
+	}
+
 	// Connect to the database
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -420,8 +461,9 @@ func main() {
 
 	// Create a new apiConfig
 	apiCfg := &apiConfig{
-		DB:       dbQueries,
-		Platform: platform,
+		DB:        dbQueries,
+		Platform:  platform,
+		jwtSecret: jwtSecret, // Store the secret
 	}
 
 	// Create a new ServeMux
@@ -443,7 +485,7 @@ func main() {
 
 	// Register handlers for /api/chirps and /api/chirps/{chirpID}
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
-	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)           // Now authenticated
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID) // Added route
 
 	// Create the server with the mux as handler
