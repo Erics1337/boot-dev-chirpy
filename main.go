@@ -4,12 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors" // Need this for sql.ErrNoRows check
 	"io"
 	"log"
 	"net/http"
 	"os"
-
-	// "sort" // Removed unused import
 	"strings"
 	"sync/atomic"
 	"time"
@@ -185,6 +184,56 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(respChirps)
 }
 
+func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	// Validate request method
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	// Get chirpID from path parameter
+	chirpIDStr := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid chirp ID format"})
+		return
+	}
+
+	// Fetch chirp from the database
+	chirp, err := cfg.DB.GetChirp(context.Background(), chirpID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Chirp not found
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Chirp not found"})
+		} else {
+			// Other database error
+			log.Printf("Error getting chirp by ID %s: %v", chirpIDStr, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Could not retrieve chirp"})
+		}
+		return
+	}
+
+	// Prepare the response
+	resp := createChirpResponse{
+		ID:        chirp.ID.String(),
+		CreatedAt: chirp.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: chirp.UpdatedAt.Format(time.RFC3339),
+		Body:      chirp.Body,
+		UserID:    chirp.UserID.String(),
+	}
+
+	// Set content type header
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return 200 OK status
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	// Validate request method
 	if r.Method != http.MethodPost {
@@ -292,17 +341,11 @@ func main() {
 	mux.HandleFunc("/admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("/admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("/api/users", apiCfg.handlerCreateUser)
-	// Register both POST and GET handlers for /api/chirps
-	mux.HandleFunc("/api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			apiCfg.handlerCreateChirp(w, r)
-		case http.MethodGet:
-			apiCfg.handlerGetChirps(w, r)
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
-	})
+
+	// Register handlers for /api/chirps and /api/chirps/{chirpID}
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID) // Added route
 
 	// Create the server with the mux as handler
 	server := &http.Server{
