@@ -224,8 +224,23 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(respChirps)
 }
 
-func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request) {
+// handlerChirpByID routes requests for /api/chirps/{chirpID} based on method
+func (cfg *apiConfig) handlerChirpByID(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		cfg.handlerGetChirpByIDGet(w, r)
+	case http.MethodDelete:
+		cfg.handlerDeleteChirp(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+	}
+}
+
+func (cfg *apiConfig) handlerGetChirpByIDGet(w http.ResponseWriter, r *http.Request) {
 	// Validate request method
+	// Note: Method validation is now handled by handlerChirpByID, but keeping it here
+	// doesn't hurt and provides a layer of defense if handlerChirpByID changes.
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
@@ -630,6 +645,78 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(resp)
 }
 
+// handlerDeleteChirp handles the DELETE /api/chirps/{chirpID} endpoint
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	// Validate request method (though routing should handle this)
+	if r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	// --- Authentication ---
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting bearer token for chirp delete: %v", err)
+		w.WriteHeader(http.StatusUnauthorized) // 401 for missing/malformed token
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
+	authenticatedUserID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
+	if err != nil {
+		log.Printf("Error validating JWT for chirp delete: %v", err)
+		w.WriteHeader(http.StatusUnauthorized) // 401 for invalid token
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+	// --- End Authentication ---
+
+	// Get chirpID from path parameter
+	chirpIDStr := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest) // 400 for invalid UUID format
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid chirp ID format"})
+		return
+	}
+
+	// --- Authorization ---
+	// Fetch the chirp to check ownership
+	chirp, err := cfg.DB.GetChirp(context.Background(), chirpID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound) // 404 if chirp doesn't exist
+			json.NewEncoder(w).Encode(map[string]string{"error": "Chirp not found"})
+		} else {
+			log.Printf("Error getting chirp %s for delete check: %v", chirpIDStr, err)
+			w.WriteHeader(http.StatusInternalServerError) // 500 for other DB errors
+			json.NewEncoder(w).Encode(map[string]string{"error": "Could not retrieve chirp"})
+		}
+		return
+	}
+
+	// Check if the authenticated user is the author
+	if chirp.UserID != authenticatedUserID {
+		w.WriteHeader(http.StatusForbidden) // 403 if not the author
+		json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden"})
+		return
+	}
+	// --- End Authorization ---
+
+	// Delete the chirp
+	err = cfg.DB.DeleteChirp(context.Background(), chirpID)
+	if err != nil {
+		log.Printf("Error deleting chirp %s: %v", chirpIDStr, err)
+		w.WriteHeader(http.StatusInternalServerError) // 500 if delete fails
+		json.NewEncoder(w).Encode(map[string]string{"error": "Could not delete chirp"})
+		return
+	}
+
+	// Respond with 204 No Content on successful deletion
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func main() {
 	// Load environment variables
 	err := godotenv.Load()
@@ -693,8 +780,8 @@ func main() {
 
 	// Register handlers for /api/chirps and /api/chirps/{chirpID}
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
-	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)           // Now authenticated
-	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID) // Added route
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)    // Now authenticated
+	mux.HandleFunc("/api/chirps/{chirpID}", apiCfg.handlerChirpByID) // Use wrapper for GET/DELETE
 
 	// Create the server with the mux as handler
 	server := &http.Server{
