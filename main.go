@@ -25,7 +25,6 @@ type apiConfig struct {
 	DB             *database.Queries
 	Platform       string
 	jwtSecret      string // Add JWT secret field
-	apiKey         string // Add API key field
 	polkaAPIKey    string // Add Polka API key field
 }
 
@@ -218,10 +217,31 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch chirps from the database
-	dbChirps, err := cfg.DB.GetChirps(context.Background())
+	// Check for author_id query parameter
+	authorIDStr := r.URL.Query().Get("author_id")
+	var dbChirps []database.Chirp
+	var err error
+
+	if authorIDStr != "" {
+		// If author_id is provided, parse it and fetch by author
+		authorID, parseErr := uuid.Parse(authorIDStr)
+		if parseErr != nil {
+			log.Printf("Error parsing author_id '%s': %v", authorIDStr, parseErr)
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid author ID format"})
+			return
+		}
+		log.Printf("Fetching chirps for author_id: %s", authorID.String())
+		dbChirps, err = cfg.DB.GetChirpsByAuthor(context.Background(), authorID)
+	} else {
+		// If author_id is not provided, fetch all chirps
+		log.Println("Fetching all chirps")
+		dbChirps, err = cfg.DB.GetChirps(context.Background())
+	}
+
+	// Handle potential database errors from either fetch
 	if err != nil {
-		log.Printf("Error getting chirps: %v", err)
+		log.Printf("Error getting chirps from database: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Could not retrieve chirps"})
 		return
