@@ -25,6 +25,8 @@ type apiConfig struct {
 	DB             *database.Queries
 	Platform       string
 	jwtSecret      string // Add JWT secret field
+	apiKey         string // Add API key field
+	polkaAPIKey    string // Add Polka API key field
 }
 
 // Remove UserID, it will come from JWT
@@ -592,8 +594,22 @@ func (cfg *apiConfig) handlerPolkaWebhook(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// --- No Authentication for now ---
-	// TODO: Add API Key authentication later
+	// --- Authentication ---
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		log.Printf("Error getting API key from Polka webhook: %v", err)
+		w.WriteHeader(http.StatusUnauthorized) // 401 for auth errors
+		// Optionally send an error message, though Polka might ignore it
+		// json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
+	if apiKey != cfg.polkaAPIKey {
+		log.Printf("Invalid API key received from Polka webhook")
+		w.WriteHeader(http.StatusUnauthorized) // 401 for incorrect key
+		return
+	}
+	// --- End Authentication ---
 
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
@@ -836,6 +852,12 @@ func main() {
 		log.Fatal("JWT_SECRET environment variable is not set")
 	}
 
+	// Get Polka API Key
+	polkaKey := os.Getenv("POLKA_API_KEY")
+	if polkaKey == "" {
+		log.Fatal("POLKA_API_KEY environment variable is not set") // Fail if not set
+	}
+
 	// Connect to the database
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -848,9 +870,10 @@ func main() {
 
 	// Create a new apiConfig
 	apiCfg := &apiConfig{
-		DB:        dbQueries,
-		Platform:  platform,
-		jwtSecret: jwtSecret, // Store the secret
+		DB:          dbQueries,
+		Platform:    platform,
+		jwtSecret:   jwtSecret, // Store the secret
+		polkaAPIKey: polkaKey,  // Store the Polka key
 	}
 
 	// Create a new ServeMux

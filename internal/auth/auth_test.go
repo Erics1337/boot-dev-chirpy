@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -101,6 +102,77 @@ func TestGetBearerToken(t *testing.T) {
 				t.Errorf("Expected token '%s', got '%s'", tt.expected, token)
 			}
 			if err != tt.expectedErr {
+				t.Errorf("Expected error '%v', got '%v'", tt.expectedErr, err)
+			}
+		})
+	}
+}
+
+func TestGetAPIKey(t *testing.T) {
+	tests := []struct {
+		name        string
+		header      http.Header
+		expectedKey string
+		expectedErr error
+	}{
+		{
+			name:        "Valid ApiKey",
+			header:      http.Header{"Authorization": {"ApiKey mysecretkey123"}},
+			expectedKey: "mysecretkey123",
+			expectedErr: nil,
+		},
+		{
+			name:        "Valid ApiKey Lowercase",
+			header:      http.Header{"Authorization": {"apikey mysecretkey456"}},
+			expectedKey: "mysecretkey456",
+			expectedErr: nil,
+		},
+		{
+			name:        "No Authorization Header",
+			header:      http.Header{},
+			expectedKey: "",
+			expectedErr: ErrNoAuthHeaderIncluded,
+		},
+		{
+			name:        "Empty Authorization Header",
+			header:      http.Header{"Authorization": {""}},
+			expectedKey: "",
+			expectedErr: ErrNoAuthHeaderIncluded,
+		},
+		{
+			name:        "Malformed - Missing ApiKey Prefix",
+			header:      http.Header{"Authorization": {"mysecretkey789"}},
+			expectedKey: "",
+			expectedErr: ErrMalformedAuthHeader,
+		},
+		{
+			name:        "Malformed - Wrong Scheme (Bearer)",
+			header:      http.Header{"Authorization": {"Bearer mysecretkeyabc"}},
+			expectedKey: "",
+			expectedErr: ErrMalformedAuthHeader,
+		},
+		{
+			name:        "Malformed - Too Many Parts",
+			header:      http.Header{"Authorization": {"ApiKey mysecretkey extrapart"}},
+			expectedKey: "",
+			expectedErr: ErrMalformedAuthHeader,
+		},
+		{
+			name:        "Malformed - Only ApiKey",
+			header:      http.Header{"Authorization": {"ApiKey"}},
+			expectedKey: "",
+			expectedErr: ErrMalformedAuthHeader,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key, err := GetAPIKey(tt.header)
+			if key != tt.expectedKey {
+				t.Errorf("Expected key '%s', got '%s'", tt.expectedKey, key)
+			}
+			// Use errors.Is for checking specific error types/values
+			if !errors.Is(err, tt.expectedErr) {
 				t.Errorf("Expected error '%v', got '%v'", tt.expectedErr, err)
 			}
 		})
