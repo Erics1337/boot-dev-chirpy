@@ -54,18 +54,23 @@ type createUserResponse struct {
 
 // Add login request struct
 type loginRequest struct {
-	Email            string `json:"email"`
-	Password         string `json:"password"`
-	ExpiresInSeconds *int   `json:"expires_in_seconds"` // Optional expiration
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 // Add login response struct
 type loginResponse struct {
-	ID        string `json:"id"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-	Email     string `json:"email"`
-	Token     string `json:"token"` // Add token field
+	ID           string `json:"id"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	Email        string `json:"email"`
+	Token        string `json:"token"` // Access token
+	RefreshToken string `json:"refresh_token"`
+}
+
+// Refresh response struct
+type refreshResponse struct {
+	Token string `json:"token"` // New access token
 }
 
 var profaneWords = []string{
@@ -386,20 +391,10 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine expiration duration
-	expiresIn := time.Hour // Default: 1 hour
-	if req.ExpiresInSeconds != nil {
-		requestedSeconds := *req.ExpiresInSeconds
-		if requestedSeconds > 0 && requestedSeconds <= 3600 { // Cap at 1 hour (3600 seconds)
-			expiresIn = time.Duration(requestedSeconds) * time.Second
-		} else if requestedSeconds > 3600 {
-			expiresIn = time.Hour // Cap at 1 hour if requested > 1 hour
-		}
-		// If requestedSeconds <= 0, the default of 1 hour is used
-	}
-
-	// Generate JWT
-	tokenString, err := auth.MakeJWT(user.ID, cfg.jwtSecret, expiresIn)
+	// --- Access Token ---
+	// Access tokens expire after 1 hour
+	accessTokenTTL := time.Hour
+	accessTokenString, err := auth.MakeJWT(user.ID, cfg.jwtSecret, accessTokenTTL)
 	if err != nil {
 		log.Printf("Error generating JWT: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -407,13 +402,38 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Refresh Token ---
+	refreshTokenString, err := auth.MakeRefreshToken()
+	if err != nil {
+		log.Printf("Error generating refresh token: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Error generating refresh token"})
+		return
+	}
+
+	// Store refresh token in DB (expires in 60 days)
+	refreshTokenTTL := time.Hour * 24 * 60 // 60 days
+	refreshTokenExpiresAt := time.Now().UTC().Add(refreshTokenTTL)
+	_, err = cfg.DB.CreateRefreshToken(context.Background(), database.CreateRefreshTokenParams{
+		Token:     refreshTokenString,
+		UserID:    user.ID,
+		ExpiresAt: refreshTokenExpiresAt,
+	})
+	if err != nil {
+		log.Printf("Error storing refresh token: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Error saving session"})
+		return
+	}
+
 	// Prepare the response
 	resp := loginResponse{
-		ID:        user.ID.String(),
-		CreatedAt: user.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: user.UpdatedAt.Format(time.RFC3339),
-		Email:     user.Email,
-		Token:     tokenString, // Include the token
+		ID:           user.ID.String(),
+		CreatedAt:    user.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    user.UpdatedAt.Format(time.RFC3339),
+		Email:        user.Email,
+		Token:        accessTokenString,  // Use the correct variable
+		RefreshToken: refreshTokenString, // Add the refresh token
 	}
 
 	// Set content type header
@@ -422,6 +442,86 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	// Return OK status
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handlerRefresh handles the POST /api/refresh endpoint
+func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+	// Validate request method
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	// Get refresh token from header
+	refreshTokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting bearer token for refresh: %v", err)
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
+	// Look up user by refresh token
+	user, err := cfg.DB.GetUserForRefreshToken(context.Background(), refreshTokenString)
+	if err != nil {
+		// This covers token not found, expired, or revoked based on the query logic
+		log.Printf("Error validating refresh token: %v", err) // Log the specific error
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid refresh token"})
+		return
+	}
+
+	// Generate new access token (1 hour expiry)
+	accessTokenTTL := time.Hour
+	newAccessTokenString, err := auth.MakeJWT(user.ID, cfg.jwtSecret, accessTokenTTL)
+	if err != nil {
+		log.Printf("Error generating new access token during refresh: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Error generating access token"})
+		return
+	}
+
+	// Prepare the response
+	resp := refreshResponse{
+		Token: newAccessTokenString,
+	}
+
+	// Set content type header
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return OK status
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handlerRevoke handles the POST /api/revoke endpoint
+func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
+	// Validate request method
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	// Get refresh token from header
+	refreshTokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting bearer token for revoke: %v", err)
+		// Still return 204 even if header is bad, the goal is revocation
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Revoke the token in the database
+	err = cfg.DB.RevokeRefreshToken(context.Background(), refreshTokenString)
+	if err != nil {
+		// Log the error, but still return 204 as the token is effectively unusable
+		log.Printf("Error revoking refresh token '%s': %v", refreshTokenString, err)
+	}
+
+	// Respond with 204 No Content
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
@@ -481,7 +581,9 @@ func main() {
 	mux.HandleFunc("/admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("/admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("/api/users", apiCfg.handlerCreateUser)
-	mux.HandleFunc("/api/login", apiCfg.handlerLogin) // Add login route
+	mux.HandleFunc("/api/login", apiCfg.handlerLogin)     // Add login route
+	mux.HandleFunc("/api/refresh", apiCfg.handlerRefresh) // Add refresh route
+	mux.HandleFunc("/api/revoke", apiCfg.handlerRevoke)   // Add revoke route
 
 	// Register handlers for /api/chirps and /api/chirps/{chirpID}
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)

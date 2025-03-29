@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -41,6 +43,19 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 	})
 
 	return token.SignedString(signingKey)
+}
+
+// MakeRefreshToken generates a random 256-bit hex-encoded string
+func MakeRefreshToken() (string, error) {
+	// Generate 32 random bytes (256 bits)
+	const tokenBytes = 32 // 256 bits
+	b := make([]byte, tokenBytes)
+	_, err := rand.Read(b)
+	if err != nil {
+		// It's generally better to wrap errors for context
+		return "", fmt.Errorf("failed to generate random bytes for refresh token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // ValidateJWT validates a JWT token and returns the user ID
