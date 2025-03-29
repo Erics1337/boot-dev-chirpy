@@ -46,10 +46,11 @@ type createUserRequest struct {
 }
 
 type createUserResponse struct {
-	ID        string `json:"id"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-	Email     string `json:"email"`
+	ID          string `json:"id"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	Email       string `json:"email"`
+	IsChirpyRed bool   `json:"is_chirpy_red"` // Added field
 }
 
 // Add login request struct
@@ -64,7 +65,8 @@ type loginResponse struct {
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 	Email        string `json:"email"`
-	Token        string `json:"token"` // Access token
+	IsChirpyRed  bool   `json:"is_chirpy_red"` // Added field
+	Token        string `json:"token"`         // Access token
 	RefreshToken string `json:"refresh_token"`
 }
 
@@ -73,10 +75,29 @@ type refreshResponse struct {
 	Token string `json:"token"` // New access token
 }
 
+// Update user response struct
+type updateUserResponse struct {
+	ID          string `json:"id"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	Email       string `json:"email"`
+	IsChirpyRed bool   `json:"is_chirpy_red"`
+}
+
 // Update user request struct
 type updateUserRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+// Polka webhook request structs
+type polkaWebhookRequestData struct {
+	UserID string `json:"user_id"` // Keep as string for initial parsing
+}
+
+type polkaWebhookRequest struct {
+	Event string                  `json:"event"`
+	Data  polkaWebhookRequestData `json:"data"`
 }
 
 var profaneWords = []string{
@@ -365,10 +386,11 @@ func (cfg *apiConfig) handlerCreateUserPost(w http.ResponseWriter, r *http.Reque
 
 	// Prepare the response (without password/hash)
 	resp := createUserResponse{
-		ID:        user.ID.String(),
-		CreatedAt: user.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: user.UpdatedAt.Format(time.RFC3339),
-		Email:     user.Email,
+		ID:          user.ID.String(),
+		CreatedAt:   user.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   user.UpdatedAt.Format(time.RFC3339),
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed, // Added field
 	}
 
 	// Set content type header
@@ -468,6 +490,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    user.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:    user.UpdatedAt.Format(time.RFC3339),
 		Email:        user.Email,
+		IsChirpyRed:  user.IsChirpyRed,   // Added field
 		Token:        accessTokenString,  // Use the correct variable
 		RefreshToken: refreshTokenString, // Add the refresh token
 	}
@@ -560,6 +583,76 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlerPolkaWebhook handles incoming webhooks from Polka
+func (cfg *apiConfig) handlerPolkaWebhook(w http.ResponseWriter, r *http.Request) {
+	// Validate request method
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	// --- No Authentication for now ---
+	// TODO: Add API Key authentication later
+
+	// Read the request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Error reading Polka webhook body: %v", err)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Error reading request body"})
+		return
+	}
+
+	// Parse the request body
+	var req polkaWebhookRequest
+	err = json.Unmarshal(body, &req)
+	if err != nil {
+		log.Printf("Error unmarshalling Polka webhook JSON: %v", err)
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+
+	// Check the event type
+	if req.Event != "user.upgraded" {
+		// We only care about user.upgraded events
+		w.WriteHeader(http.StatusNoContent) // 204
+		return
+	}
+
+	// Parse the user ID
+	userID, err := uuid.Parse(req.Data.UserID)
+	if err != nil {
+		log.Printf("Error parsing UserID from Polka webhook: %v", err)
+		w.WriteHeader(http.StatusBadRequest) // Or maybe 400 Bad Request? Let's stick with 400 for invalid ID format.
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid user ID format"})
+		return
+	}
+
+	// Upgrade the user in the database
+	_, err = cfg.DB.UpgradeUserToChirpyRed(context.Background(), userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// User not found
+			log.Printf("User not found for upgrade webhook: %s", userID)
+			w.WriteHeader(http.StatusNotFound) // 404
+			// Polka expects an empty body on failure too, apparently.
+			return
+		}
+		// Other database error
+		log.Printf("Error upgrading user %s to Chirpy Red: %v", userID, err)
+		w.WriteHeader(http.StatusInternalServerError) // 500 - Polka might retry
+		// Send an error message for internal debugging, though Polka might ignore it.
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to upgrade user"})
+		return
+	}
+
+	// Success
+	log.Printf("User %s successfully upgraded to Chirpy Red via webhook.", userID)
+	w.WriteHeader(http.StatusNoContent) // 204
+}
+
 // handlerUpdateUser handles the PUT /api/users endpoint
 func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// Validate request method
@@ -629,12 +722,13 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Prepare the response (using createUserResponse format)
-	resp := createUserResponse{
-		ID:        updatedUser.ID.String(),
-		CreatedAt: updatedUser.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: updatedUser.UpdatedAt.Format(time.RFC3339),
-		Email:     updatedUser.Email,
+	// Prepare the response using the new updateUserResponse struct
+	resp := updateUserResponse{
+		ID:          updatedUser.ID.String(),
+		CreatedAt:   updatedUser.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   updatedUser.UpdatedAt.Format(time.RFC3339),
+		Email:       updatedUser.Email,
+		IsChirpyRed: updatedUser.IsChirpyRed, // Added field
 	}
 
 	// Set content type header
@@ -773,10 +867,11 @@ func main() {
 	mux.HandleFunc("/api/healthz", handlerReadiness)
 	mux.HandleFunc("/admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("/admin/reset", apiCfg.handlerReset)
-	mux.HandleFunc("/api/users", apiCfg.handlerUsers)     // Use the wrapper handler
-	mux.HandleFunc("/api/login", apiCfg.handlerLogin)     // Add login route
-	mux.HandleFunc("/api/refresh", apiCfg.handlerRefresh) // Add refresh route
-	mux.HandleFunc("/api/revoke", apiCfg.handlerRevoke)   // Add revoke route
+	mux.HandleFunc("/api/users", apiCfg.handlerUsers)                      // Use the wrapper handler
+	mux.HandleFunc("/api/login", apiCfg.handlerLogin)                      // Add login route
+	mux.HandleFunc("/api/refresh", apiCfg.handlerRefresh)                  // Add refresh route
+	mux.HandleFunc("/api/revoke", apiCfg.handlerRevoke)                    // Add revoke route
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.handlerPolkaWebhook) // Add Polka webhook route
 
 	// Register handlers for /api/chirps and /api/chirps/{chirpID}
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
