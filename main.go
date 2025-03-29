@@ -73,6 +73,12 @@ type refreshResponse struct {
 	Token string `json:"token"` // New access token
 }
 
+// Update user request struct
+type updateUserRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 var profaneWords = []string{
 	"kerfuffle",
 	"sharbert",
@@ -268,8 +274,23 @@ func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+// handlerUsers routes requests for /api/users based on method
+func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		cfg.handlerCreateUserPost(w, r)
+	case http.MethodPut:
+		cfg.handlerUpdateUser(w, r)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+	}
+}
+
+func (cfg *apiConfig) handlerCreateUserPost(w http.ResponseWriter, r *http.Request) {
 	// Validate request method
+	// Note: Method validation is now handled by handlerUsers, but keeping it here
+	// doesn't hurt and provides a layer of defense if handlerUsers changes.
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(map[string]string{
@@ -524,6 +545,91 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlerUpdateUser handles the PUT /api/users endpoint
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	// Validate request method
+	if r.Method != http.MethodPut {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	// --- Authentication ---
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("Error getting bearer token for user update: %v", err)
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tokenString, cfg.jwtSecret)
+	if err != nil {
+		log.Printf("Error validating JWT for user update: %v", err)
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+	// --- End Authentication ---
+
+	// Read the request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Error reading request body"})
+		return
+	}
+
+	// Parse the request body
+	var req updateUserRequest
+	err = json.Unmarshal(body, &req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+
+	// Hash the new password
+	hashedPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		log.Printf("Error hashing password during update: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Error processing password"})
+		return
+	}
+
+	// Prepare parameters for database query
+	params := database.UpdateUserParams{
+		ID:             userID, // Use the ID from the validated token
+		Email:          req.Email,
+		HashedPassword: hashedPassword,
+	}
+
+	// Update the user in the database
+	updatedUser, err := cfg.DB.UpdateUser(context.Background(), params)
+	if err != nil {
+		log.Printf("Error updating user %s: %v", userID.String(), err)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Error updating user"})
+		return
+	}
+
+	// Prepare the response (using createUserResponse format)
+	resp := createUserResponse{
+		ID:        updatedUser.ID.String(),
+		CreatedAt: updatedUser.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: updatedUser.UpdatedAt.Format(time.RFC3339),
+		Email:     updatedUser.Email,
+	}
+
+	// Set content type header
+	w.Header().Set("Content-Type", "application/json")
+
+	// Return OK status
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func main() {
 	// Load environment variables
 	err := godotenv.Load()
@@ -580,7 +686,7 @@ func main() {
 	mux.HandleFunc("/api/healthz", handlerReadiness)
 	mux.HandleFunc("/admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("/admin/reset", apiCfg.handlerReset)
-	mux.HandleFunc("/api/users", apiCfg.handlerCreateUser)
+	mux.HandleFunc("/api/users", apiCfg.handlerUsers)     // Use the wrapper handler
 	mux.HandleFunc("/api/login", apiCfg.handlerLogin)     // Add login route
 	mux.HandleFunc("/api/refresh", apiCfg.handlerRefresh) // Add refresh route
 	mux.HandleFunc("/api/revoke", apiCfg.handlerRevoke)   // Add revoke route
