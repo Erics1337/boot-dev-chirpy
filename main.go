@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os" // Added for in-memory sorting
-	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -257,10 +256,10 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 	// Sort the results in memory if "desc" is requested
 	// Note: The database already returns them sorted ascending by default
 	if sortOrder == "desc" {
-		sort.Slice(dbChirps, func(i, j int) bool {
-			// Compare CreatedAt times for descending order
-			return dbChirps[i].CreatedAt.After(dbChirps[j].CreatedAt)
-		})
+		// Reverse the slice for descending order
+		for i, j := 0, len(dbChirps)-1; i < j; i, j = i+1, j-1 {
+			dbChirps[i], dbChirps[j] = dbChirps[j], dbChirps[i]
+		}
 	}
 	// If sortOrder is "asc" or invalid, we use the default ascending order from the DB
 
