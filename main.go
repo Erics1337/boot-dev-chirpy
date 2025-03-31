@@ -864,10 +864,13 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 }
 
 func main() {
-	// Load environment variables
+	// Load environment variables from .env file if it exists.
+	// Ignore "file not found" errors, as configuration might be provided
+	// via actual environment variables (e.g., in Docker).
 	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
+	if err != nil && !os.IsNotExist(err) {
+		// Only fatal if the error is something other than the file not existing
+		log.Fatalf("Error loading .env file: %v", err)
 	}
 
 	// Get database connection string
@@ -917,10 +920,12 @@ func main() {
 
 	// Add health check endpoint
 
-	// Create a file server handler with metrics middleware
+	// Create a file server handler for the root path, with metrics middleware
 	fileServer := http.FileServer(http.Dir("."))
-	wrappedHandler := apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", fileServer))
-	mux.Handle("/app/", wrappedHandler)
+	// Apply middleware directly to the file server
+	wrappedHandler := apiCfg.middlewareMetricsInc(fileServer)
+	// Handle requests to the root path "/"
+	mux.Handle("/", wrappedHandler)
 
 	// Add endpoints
 	mux.HandleFunc("/api/healthz", handlerReadiness)
