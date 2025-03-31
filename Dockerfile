@@ -26,5 +26,8 @@ COPY --from=builder /goserver /goserver
 # Expose port (assuming default 8080, adjust if needed)
 EXPOSE 8080
 
+# Set default port environment variable
+ENV PORT=8080
+
 # Set the entrypoint command
 CMD ["/goserver"]

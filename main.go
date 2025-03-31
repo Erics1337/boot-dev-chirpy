@@ -942,14 +942,21 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)    // Now authenticated
 	mux.HandleFunc("/api/chirps/{chirpID}", apiCfg.handlerChirpByID) // Use wrapper for GET/DELETE
 
+	// Get port from environment variable, default to 8080
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	serverAddr := ":" + port
+
 	// Create the server with the mux as handler
 	server := &http.Server{
-		Addr:    ":8080",
+		Addr:    serverAddr, // Use the configured address
 		Handler: mux,
 	}
 
 	// Start the server
-	log.Printf("Server starting on %s", server.Addr)
+	log.Printf("Server starting on %s", serverAddr) // Log the actual address
 	err = server.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
