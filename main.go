@@ -920,11 +920,12 @@ func main() {
 
 	// Add health check endpoint
 
-	// Create a file server handler for the root path, with metrics middleware
-	fileServer := http.FileServer(http.Dir("."))
-	// Apply middleware directly to the file server
+	// Create a file server handler for the root path, serving files from /app
+	// Assets are copied to /app in the Dockerfile
+	fileServer := http.FileServer(http.Dir("/app"))
+	// Apply metrics middleware
 	wrappedHandler := apiCfg.middlewareMetricsInc(fileServer)
-	// Handle requests to the root path "/"
+	// Handle requests to the root path "/" (will serve index.html from /app)
 	mux.Handle("/", wrappedHandler)
 
 	// Add endpoints
@@ -947,7 +948,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	serverAddr := ":" + port
+	serverAddr := "0.0.0.0:" + port // Explicitly bind to 0.0.0.0
 
 	// Create the server with the mux as handler
 	server := &http.Server{

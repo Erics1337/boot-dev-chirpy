@@ -23,6 +23,13 @@ FROM debian:stable-slim
 # Copy the static binary from the builder stage
 COPY --from=builder /goserver /goserver
 
+# Explicitly create the /app directory
+RUN mkdir /app
+
+# Copy static assets from the builder stage into /app directory
+COPY --from=builder /app/index.html /app/index.html
+COPY --from=builder /app/assets /app/assets
+
 # Expose port (assuming default 8080, adjust if needed)
 EXPOSE 8080
 

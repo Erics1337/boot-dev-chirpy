@@ -40,6 +40,36 @@ This is the Chirpy backend service.
     ```
     The server will start, typically on port 8080.
 
+## Running with Docker
+
+You can also build and run the application using Docker.
+
+1.  **Build the Docker Image:**
+    ```bash
+    # Use the tag you prefer, e.g., erics1337/goserver or chirpy-backend
+    docker build -t erics1337/goserver .
+    ```
+
+2.  **Prepare Environment Variables:**
+    The container requires the following environment variables to be set when running:
+    *   `DB_URL`: The connection string for your PostgreSQL database.
+        *   **Important:** If your database is running on your host machine (outside Docker), use `host.docker.internal` instead of `localhost` in the connection string on macOS and Windows (e.g., `postgres://user:pass@host.docker.internal:5432/chirpy?sslmode=disable`). On Linux, you might need to use your host's IP address or configure Docker networking differently.
+    *   `JWT_SECRET`: A strong secret key for signing JWT tokens (get this from your `.env` file or generate a new one).
+    *   `POLKA_API_KEY`: Your API key for the Polka service (get this from your `.env` file).
+    *   `PLATFORM`: (Optional) Set to `dev` or `prod`. Defaults to `dev`.
+
+3.  **Run the Docker Container:**
+    Replace the placeholder values below with your actual environment variable values (you can copy them from your `.env` file).
+    ```bash
+    docker run -p 8080:8080 \
+      -e DB_URL="postgres://ericswanson:@host.docker.internal:5432/chirpy?sslmode=disable" \
+      -e JWT_SECRET="your_jwt_secret_from_env" \
+      -e POLKA_API_KEY="your_polka_key_from_env" \
+      # -e PLATFORM="dev" # Optional
+      erics1337/goserver
+    ```
+    The application will be accessible at `http://localhost:8080`.
+
 ## Development
 
 *   **Generate SQLC Code:**
